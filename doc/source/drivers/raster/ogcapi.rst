@@ -71,7 +71,7 @@ Open options
 The following open options are available:
 
 - .. oo:: API
-     :choices: AUTO, MAPS, TILES, COVERAGE, ITEMS
+     :choices: AUTO, MAP, TILES, COVERAGE, ITEMS
      :default: AUTO
 
      Which API to use for data acquisition.
