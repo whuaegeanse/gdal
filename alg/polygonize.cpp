@@ -126,6 +126,12 @@ static CPLErr GDALPolygonizeT(GDALRasterBandH hSrcBand,
         return CE_Failure;
     }
 
+    const int nCacheYSize =
+        MAX(MIN(512 * 1024 * (1024 / sizeof(DataType)) / nXSize, nYSize), 1);
+
+    DataType *panCacheData = static_cast<DataType *>(
+        VSI_MALLOC2_VERBOSE(sizeof(DataType), nCacheYSize * nXSize));
+
     DataType *panLastLineVal =
         static_cast<DataType *>(VSI_MALLOC2_VERBOSE(sizeof(DataType), nXSize));
     DataType *panThisLineVal =
@@ -137,10 +143,11 @@ static CPLErr GDALPolygonizeT(GDALRasterBandH hSrcBand,
 
     GByte *pabyMaskLine = static_cast<GByte *>(VSI_MALLOC_VERBOSE(nXSize));
 
-    if (panLastLineVal == nullptr || panThisLineVal == nullptr ||
-        panLastLineId == nullptr || panThisLineId == nullptr ||
-        pabyMaskLine == nullptr)
+    if (panCacheData == nullptr || panLastLineVal == nullptr ||
+        panThisLineVal == nullptr || panLastLineId == nullptr ||
+        panThisLineId == nullptr || pabyMaskLine == nullptr)
     {
+        CPLFree(panCacheData);
         CPLFree(panThisLineId);
         CPLFree(panLastLineId);
         CPLFree(panThisLineVal);
@@ -194,10 +201,25 @@ static CPLErr GDALPolygonizeT(GDALRasterBandH hSrcBand,
 
     CPLErr eErr = CE_None;
 
+    int nCacheYBeg, nCacheYEnd, nRelativeY;
     for (int iY = 0; eErr == CE_None && iY < nYSize; iY++)
     {
-        eErr = GDALRasterIO(hSrcBand, GF_Read, 0, iY, nXSize, 1, panThisLineVal,
-                            nXSize, 1, eDT, 0, 0);
+        if (iY == 0 || iY >= nCacheYEnd)
+        {
+            nCacheYBeg = iY;
+            nCacheYEnd = MIN(nCacheYBeg + nCacheYSize, nYSize);
+            eErr = GDALRasterIO(hSrcBand, GF_Read, 0, nCacheYBeg, nXSize,
+                                nCacheYEnd - nCacheYBeg, panCacheData, nXSize,
+                                nCacheYEnd - nCacheYBeg, eDT, 0, 0);
+            if (eErr != CE_None)
+            {
+                break;
+            }
+        }
+
+        nRelativeY = iY - nCacheYBeg;
+        memcpy(panThisLineVal, panCacheData + nRelativeY * nXSize,
+               sizeof(DataType) * nXSize);
 
         if (eErr == CE_None && hMaskBand != nullptr)
             eErr = GPMaskImageData(hMaskBand, pabyMaskLine, iY, nXSize,
@@ -285,8 +307,23 @@ static CPLErr GDALPolygonizeT(GDALRasterBandH hSrcBand,
          */
         if (iY < nYSize)
         {
-            eErr = GDALRasterIO(hSrcBand, GF_Read, 0, iY, nXSize, 1,
-                                panThisLineVal, nXSize, 1, eDT, 0, 0);
+            if (iY == 0 || iY >= nCacheYEnd)
+            {
+                nCacheYBeg = iY;
+                nCacheYEnd = MIN(nCacheYBeg + nCacheYSize, nYSize);
+                eErr = GDALRasterIO(hSrcBand, GF_Read, 0, nCacheYBeg, nXSize,
+                                    nCacheYEnd - nCacheYBeg, panCacheData,
+                                    nXSize, nCacheYEnd - nCacheYBeg, eDT, 0, 0);
+                if (eErr != CE_None)
+                {
+                    break;
+                }
+            }
+
+            nRelativeY = iY - nCacheYBeg;
+            memcpy(panThisLineVal, panCacheData + nRelativeY * nXSize,
+                   sizeof(DataType) * nXSize);
+
             if (eErr == CE_None && hMaskBand != nullptr)
                 eErr = GPMaskImageData(hMaskBand, pabyMaskLine, iY, nXSize,
                                        panThisLineVal);
@@ -380,6 +417,7 @@ static CPLErr GDALPolygonizeT(GDALRasterBandH hSrcBand,
     /* -------------------------------------------------------------------- */
     /*      Cleanup                                                         */
     /* -------------------------------------------------------------------- */
+    CPLFree(panCacheData);
     CPLFree(panThisLineId);
     CPLFree(panLastLineId);
     CPLFree(panThisLineVal);
